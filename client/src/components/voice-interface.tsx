@@ -1,0 +1,584 @@
+import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Mic, MicOff, Activity, User, Square } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { motion, AnimatePresence } from "framer-motion";
+import { voiceService } from "@/lib/voice-service";
+import { conversationManager } from "@/lib/conversation-manager";
+import { useToast } from "@/hooks/use-toast";
+import VoiceSettings from "./voice-settings";
+import VoiceCommands from "./voice-commands";
+import ConversationDisplay from "./conversation-display";
+import VoiceToneCustomizer from "./voice-tone-customizer";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  start(): void;
+  stop(): void;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: any) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
+// Single source of digital twins with their expertise areas
+const digitalTwins = [
+  {
+    id: "albert-einstein",
+    name: "Albert Einstein",
+    expertise: ["Innovation", "Research", "Problem Solving"],
+    contentFile: "Persona Albert Einstein.docx"
+  },
+  {
+    id: "elon-musk",
+    name: "Elon Musk",
+    expertise: ["Innovation", "Strategic Thinking", "Product Development"],
+    contentFile: "Persona Elon Musk.docx"
+  },
+  {
+    id: "emad-mostaque",
+    name: "Emad Mostaque",
+    expertise: ["Artificial Intelligence", "Leadership", "Technical Vision"],
+    contentFile: "Emad Mostaque.docx"
+  },
+  {
+    id: "fei-fei-li",
+    name: "Fei-Fei Li",
+    expertise: ["Artificial Intelligence", "Research", "Technical Vision"],
+    contentFile: "Persona is Fei-Fei Li.docx"
+  },
+  {
+    id: "leonardo-da-vinci",
+    name: "Leonardo da Vinci",
+    expertise: ["Innovation", "Art", "Engineering", "Design Thinking"],
+    contentFile: "leonardo.docx"
+  },
+  {
+    id: "steve-jobs",
+    name: "Steve Jobs",
+    expertise: ["Innovation", "Product Development", "Design"],
+    contentFile: "persona steve.docx"
+  },
+  {
+    id: "walt-disney",
+    name: "Walt Disney",
+    expertise: ["Creativity", "Innovation", "Storytelling"],
+    contentFile: "Walt disney.docx"
+  }
+];
+
+export default function VoiceInterface() {
+  const [isListening, setIsListening] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [transcript, setTranscript] = useState("");
+  const [isPermissionGranted, setIsPermissionGranted] = useState(false);
+  const [noSpeechTimeout, setNoSpeechTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedPersona, setSelectedPersona] = useState<string | null>(null);
+  const [selectedPersonas, setSelectedPersonas] = useState<string[]>([]);
+  const [isMultiPersonaMode, setIsMultiPersonaMode] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [useMicInMultiMode, setUseMicInMultiMode] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    // Log digital twins to console on component mount
+    console.log("Digital Twins in Our Think Tank:");
+    digitalTwins.forEach((twin, index) => {
+      console.log(`${index + 1}. ${twin.name} - Expert in: ${twin.expertise.join(", ")}`);
+    });
+  }, []);
+
+  // Handle conversation mode change
+  const handleModeChange = (enabled: boolean) => {
+    setIsMultiPersonaMode(enabled);
+    
+    // Reset selected personas when switching modes
+    if (enabled) {
+      // If switching to multi-persona mode, clear single persona selection
+      setSelectedPersona(null);
+      
+      // If we already have personas selected, keep them
+      if (selectedPersonas.length === 0 && selectedPersona) {
+        // If we had a single persona selected, add it to the multi-selection
+        setSelectedPersonas([selectedPersona]);
+      }
+      
+      // Update conversation manager
+      if (selectedPersonas.length >= 2) {
+        conversationManager.setSelectedPersonas(selectedPersonas);
+        conversationManager.setMultiPersonaMode(true);
+      }
+    } else {
+      // If switching to single-persona mode
+      if (selectedPersonas.length > 0) {
+        // Use the first selected persona as the single persona
+        setSelectedPersona(selectedPersonas[0]);
+        conversationManager.setSelectedPersona(selectedPersonas[0]);
+      }
+      conversationManager.setMultiPersonaMode(false);
+    }
+    
+    toast({
+      title: enabled ? "Multi-Persona Mode Enabled" : "Single-Persona Mode Enabled",
+      description: enabled 
+        ? "Select at least 2 personas to have a conversation between them" 
+        : "You can now have a one-on-one conversation with a persona",
+    });
+  };
+
+  // Handle single persona selection
+  const handlePersonaChange = (personaName: string) => {
+    setSelectedPersona(personaName);
+    conversationManager.setSelectedPersona(personaName);
+
+    toast({
+      title: "Persona Selected",
+      description: `You are now conversing with ${personaName}`,
+    });
+  };
+  
+  // Handle multi-persona checkbox change
+  const handlePersonaCheckboxChange = (personaName: string, checked: boolean) => {
+    let newSelectedPersonas: string[];
+    
+    if (checked) {
+      // Add persona to selection
+      newSelectedPersonas = [...selectedPersonas, personaName];
+    } else {
+      // Remove persona from selection
+      newSelectedPersonas = selectedPersonas.filter(p => p !== personaName);
+    }
+    
+    setSelectedPersonas(newSelectedPersonas);
+    
+    // Update conversation manager if we have at least 2 personas
+    if (newSelectedPersonas.length >= 2) {
+      conversationManager.setSelectedPersonas(newSelectedPersonas);
+    }
+    
+    toast({
+      title: checked ? "Persona Added" : "Persona Removed",
+      description: checked 
+        ? `Added ${personaName} to the conversation` 
+        : `Removed ${personaName} from the conversation`,
+    });
+  };
+
+  const initializeRecognition = () => {
+    try {
+      const SpeechRecognition = window.webkitSpeechRecognition || (window as any).SpeechRecognition;
+      if (!SpeechRecognition) {
+        toast({
+          title: "Browser Not Supported",
+          description: "Please use Chrome, Edge, or Safari for voice features.",
+          variant: "destructive",
+        });
+        return false;
+      }
+
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+
+      recognitionRef.current.onstart = () => {
+        console.log("Speech recognition started");
+        setIsListening(true);
+        setIsInitializing(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        console.log("Speech recognition ended");
+        setIsListening(false);
+        setTranscript("");
+        setIsInitializing(false);
+        if (noSpeechTimeout) {
+          clearTimeout(noSpeechTimeout);
+          setNoSpeechTimeout(null);
+        }
+      };
+
+      recognitionRef.current.onresult = (event: any) => {
+        try {
+          const result = event.results[event.resultIndex];
+          const transcript = result[0].transcript;
+          console.log("Speech recognition result:", transcript);
+          setTranscript(transcript);
+
+          if (result.isFinal) {
+            handleFinalTranscript(transcript);
+          }
+        } catch (error) {
+          console.error("Error processing speech result:", error);
+          setError("Failed to process speech. Please try again.");
+        }
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        setIsListening(false);
+        setIsInitializing(false);
+
+        if (event.error === 'no-speech') {
+          setError("No speech detected. Please try speaking again.");
+        } else if (event.error === 'not-allowed') {
+          setError("Microphone access denied. Please allow access in your browser settings.");
+        } else {
+          setError(`Voice recognition error: ${event.error}`);
+        }
+      };
+
+      return true;
+    } catch (error) {
+      console.error("Error initializing speech recognition:", error);
+      setError("Failed to initialize voice recognition. Please refresh the page.");
+      return false;
+    }
+  };
+
+  const handleFinalTranscript = async (text: string) => {
+    if (!text.trim()) return;
+    setTranscript("");
+    
+    // Check if personas are selected
+    if (isMultiPersonaMode && selectedPersonas.length < 2) {
+      setError("Please select at least 2 personas for a multi-persona conversation");
+      return;
+    } else if (!isMultiPersonaMode && !selectedPersona) {
+      setError("Please select a persona before starting a conversation");
+      return;
+    }
+
+    try {
+      await conversationManager.handleUserInput(text);
+      setError(null); // Clear any previous errors on successful processing
+    } catch (error: any) {
+      console.error("Error processing speech:", error);
+      setError(error.message || "Failed to process your input. Please try again.");
+    }
+  };
+
+  const checkMicrophonePermission = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      setIsPermissionGranted(true);
+      return initializeRecognition();
+    } catch (error) {
+      console.error("Microphone permission error:", error);
+      setError("Microphone access required. Please allow access to use voice features.");
+      return false;
+    }
+  };
+
+  const toggleListening = async () => {
+    if (isInitializing) return;
+    
+    // Check if personas are selected
+    if (isMultiPersonaMode && selectedPersonas.length < 2) {
+      setError("Please select at least 2 personas for a multi-persona conversation");
+      return;
+    } else if (!isMultiPersonaMode && !selectedPersona) {
+      setError("Please select a persona before starting a conversation");
+      return;
+    }
+
+    setIsInitializing(true);
+    setError(null);
+
+    try {
+      if (!isPermissionGranted) {
+        const initialized = await checkMicrophonePermission();
+        if (!initialized) {
+          setIsInitializing(false);
+          return;
+        }
+      }
+
+      if (!isListening) {
+        await voiceService.initAudio();
+        await conversationManager.startConversation();
+        recognitionRef.current?.start();
+      } else {
+        if (noSpeechTimeout) {
+          clearTimeout(noSpeechTimeout);
+          setNoSpeechTimeout(null);
+        }
+        recognitionRef.current?.stop();
+      }
+    } catch (error: any) {
+      console.error("Voice interface error:", error);
+      setError(error.message || "Failed to initialize voice interface. Please try again.");
+      setIsListening(false);
+    } finally {
+      setIsInitializing(false);
+    }
+  };
+
+  // Function to stop the conversation
+  const stopConversation = () => {
+    conversationManager.stopConversation();
+    
+    // Reset all states to their initial values
+    setIsSpeaking(false);
+    setIsInitializing(false);
+    
+    // Don't reset selected personas when stopping the conversation
+    // This was causing the issue by setting it to [' ']
+    // setSelectedPersonas([' '])
+    
+    // If speech recognition is active, stop it
+    if (isListening) {
+      recognitionRef.current?.stop();
+    }
+    
+    toast({
+      title: "Conversation Stopped",
+      description: "The conversation has been interrupted",
+    });
+  };
+
+  // Monitor conversation manager's speaking state
+  useEffect(() => {
+    const checkSpeakingInterval = setInterval(() => {
+      // Update our local state based on the conversation manager's state
+      const conversationSpeaking = conversationManager.isCurrentlySpeaking();
+      if (isSpeaking !== conversationSpeaking) {
+        setIsSpeaking(conversationSpeaking);
+      }
+    }, 200);
+
+    return () => clearInterval(checkSpeakingInterval);
+  }, [isSpeaking]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isListening) {
+        setProgress(p => (p + 2) % 100);
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [isListening]);
+
+
+  return (
+    <div className="w-full min-h-[200px] flex flex-col gap-6 p-6">
+      {/* Conversation Mode and Persona Selection */}
+      <Card className="w-full bg-gradient-to-br from-background to-primary/5">
+        <CardHeader className="flex flex-row items-center gap-2"> auto-trading system for silver futures using a programming language like Python.
+          <User className="h-5 w-5 text-primary" />
+          <h3 className="text-lg font-semibold">Conversation Setup</h3>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Conversation Mode Toggle */}
+          <div className="flex items-center justify-between">
+            <Label htmlFor="multi-persona-mode">Conversation Mode</Label>
+            <div className="flex items-center space-x-2">
+              <Label htmlFor="multi-persona-mode" className={!isMultiPersonaMode ? "font-bold" : ""}>Talk with me</Label>
+              <Switch 
+                id="multi-persona-mode" 
+                checked={isMultiPersonaMode}
+                onCheckedChange={handleModeChange}
+              />
+              <Label htmlFor="multi-persona-mode" className={isMultiPersonaMode ? "font-bold" : ""}>Let them talk</Label>
+            </div>
+          </div>
+
+          {/* Single Persona Selection (when in single-persona mode) */}
+          {!isMultiPersonaMode && (
+            <div className="space-y-2">
+              <Label>Choose who you want to talk with</Label>
+              <Select
+                value={selectedPersona || ""}
+                onValueChange={handlePersonaChange}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a persona" />
+                </SelectTrigger>
+                <SelectContent>
+                  {digitalTwins.map((twin) => (
+                    <SelectItem key={twin.id} value={twin.name}>
+                      {twin.name} - {twin.expertise.join(", ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Multiple Persona Selection (when in multi-persona mode) */}
+          {isMultiPersonaMode && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Select personas for the conversation</Label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {digitalTwins.map((twin) => (
+                    <div key={twin.id} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={twin.id} 
+                        checked={selectedPersonas.includes(twin.name)}
+                        onCheckedChange={(checked) => handlePersonaCheckboxChange(twin.name, checked === true)}
+                      />
+                      <Label htmlFor={twin.id} className="cursor-pointer">
+                        {twin.name}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+                {selectedPersonas.length < 2 && isMultiPersonaMode && (
+                  <p className="text-sm text-destructive">Please select at least 2 personas</p>
+                )}
+              </div>
+              
+              {/* Input Method Toggle for Multi-Persona Mode */}
+              <div className="flex items-center justify-between pt-2 border-t border-border">
+                <Label htmlFor="input-method">Input Method</Label>
+                <div className="flex items-center space-x-2">
+                  <Label htmlFor="input-method" className={!useMicInMultiMode ? "font-bold" : ""}>Text</Label>
+                  <Switch 
+                    id="input-method" 
+                    checked={useMicInMultiMode}
+                    onCheckedChange={setUseMicInMultiMode}
+                  />
+                  <Label htmlFor="input-method" className={useMicInMultiMode ? "font-bold" : ""}>Microphone</Label>
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="flex flex-col items-center gap-4">
+        {/* Text input for conversation topic - only shown when not using microphone in multi-persona mode */}
+        {(!isMultiPersonaMode || (isMultiPersonaMode && !useMicInMultiMode)) && (
+          <div className="w-full max-w-md">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="conversation-topic">What should they talk about?</Label>
+              <div className="flex gap-2">
+                <input
+                  id="conversation-topic"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  placeholder="Enter a topic or question..."
+                  value={transcript}
+                  onChange={(e) => setTranscript(e.target.value)}
+                  disabled={isSpeaking || isListening}
+                />
+                {isMultiPersonaMode && (
+                  <Button
+                    variant="default"
+                    size="default"
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                    onClick={() => handleFinalTranscript(transcript)}
+                    disabled={!transcript.trim() || isSpeaking || isInitializing || selectedPersonas.length < 2}
+                  >
+                    Start
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Show microphone button in single-persona mode or when microphone is selected in multi-persona mode */}
+        {(!isMultiPersonaMode || (isMultiPersonaMode && useMicInMultiMode)) && (
+          <div className="flex w-full max-w-md gap-2">
+            <Button
+              variant={isListening ? "destructive" : "default"}
+              size="lg"
+              className="flex-1 relative bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 disabled:opacity-50"
+              onClick={toggleListening}
+              disabled={isInitializing || (!isMultiPersonaMode && !selectedPersona) || (isMultiPersonaMode && selectedPersonas.length < 2)}
+            >
+              <div className="relative flex items-center justify-center">
+                {isInitializing ? (
+                  "Initializing..."
+                ) : isListening ? (
+                  <>
+                    <MicOff className="mr-2 h-4 w-4" />
+                    Stop Listening
+                  </>
+                ) : (
+                  <>
+                    <Mic className="mr-2 h-4 w-4" />
+                    Start Listening
+                  </>
+                )}
+              </div>
+            </Button>
+          </div>
+        )}
+        
+        {/* Stop Conversation Button - only shown when conversation is in progress */}
+        {isSpeaking && (
+          <div className="flex w-full max-w-md justify-center">
+            <Button
+              variant="destructive"
+              size="lg"
+              className="relative"
+              onClick={stopConversation}
+            >
+              <div className="relative flex items-center justify-center">
+                <Square className="mr-2 h-4 w-4" />
+                Stop Conversation
+              </div>
+            </Button>
+          </div>
+        )}
+
+        {error && (
+          <div className="text-sm text-destructive text-center max-w-md">
+            {error}
+          </div>
+        )}
+
+        {/* Show progress bar and speech recognition animation when listening in any mode */}
+        <AnimatePresence>
+          {isListening && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="w-full max-w-md space-y-2"
+            >
+              <div className="relative h-8">
+                <Progress value={progress} className="h-2" />
+                {transcript && (
+                  <div className="text-sm text-muted-foreground text-center mt-2">
+                    {transcript}
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-center">
+                <motion.div
+                  animate={{
+                    scale: [1, 1.2, 1],
+                    opacity: [0.5, 1, 0.5],
+                  }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                >
+                  <Activity className="h-5 w-5 text-primary animate-pulse" />
+                </motion.div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      <div className="w-full space-y-4">
+        <ConversationDisplay />
+        <VoiceSettings />
+        <VoiceToneCustomizer />
+        <VoiceCommands />
+      </div>
+    </div>
+  );
+}
